@@ -138,6 +138,7 @@ type requestParams struct {
 	headers     map[string]string
 	body        any
 	contentType string
+	params      url.Values
 }
 
 type requestOption func(*requestParams)
@@ -157,6 +158,12 @@ func requestHeaders(headers map[string]string) requestOption {
 func requestContentType(ct string) requestOption {
 	return func(rof *requestParams) {
 		rof.contentType = ct
+	}
+}
+
+func requestValueParam(k, v string) requestOption {
+	return func(rof *requestParams) {
+		rof.params.Add(k, v)
 	}
 }
 
@@ -199,6 +206,10 @@ func (c *Client) buildRequest(ctx context.Context, method, uri string, opts ...r
 
 	for k, v := range rof.headers {
 		req.Header.Set(k, v)
+	}
+
+	if len(rof.params) > 0 {
+		req.URL.RawQuery = rof.params.Encode()
 	}
 
 	switch {
@@ -535,6 +546,50 @@ func (c *Client) ValidateACL(ctx context.Context, acl any) error {
 	}
 	if response.Message != "" {
 		return fmt.Errorf("ACL validation failed: %s; %v", response.Message, response.Data)
+	}
+	return nil
+}
+
+type ACLUser string
+type ACLAddress string
+
+// PreviewACL previews an ACL for a user or ipport
+func (c *Client) PreviewACL(ctx context.Context, acl any, previewFor any) error {
+	const uriFmt = "/api/v2/tailnet/%s/acl/preview"
+
+	reqOpts := []requestOption{
+		requestBody(acl),
+	}
+	switch v := acl.(type) {
+	case ACL:
+	case string:
+		reqOpts = append(reqOpts, requestContentType("application/hujson"))
+	default:
+		return fmt.Errorf("expected ACL content as a string or as ACL struct; got %T", v)
+	}
+
+	switch v := previewFor.(type) {
+	case ACLUser:
+		reqOpts = append(reqOpts, requestValueParam("type", "user"))
+	case ACLAddress:
+		reqOpts = append(reqOpts, requestValueParam("type", "ipport"))
+	default:
+		return fmt.Errorf("expected previewFor to be a User or Address, got %T", v)
+	}
+
+	reqOpts = append(reqOpts, requestValueParam("previewFor", previewFor.(string)))
+
+	req, err := c.buildRequest(ctx, http.MethodPost, fmt.Sprintf(uriFmt, c.tailnet), reqOpts...)
+	if err != nil {
+		return err
+	}
+
+	var response APIError
+	if err := c.performRequest(req, &response); err != nil {
+		return err
+	}
+	if response.Message != "" {
+		return fmt.Errorf("ACL preview failed: %s; %v", response.Message, response.Data)
 	}
 	return nil
 }
